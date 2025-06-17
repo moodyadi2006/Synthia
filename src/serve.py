@@ -1,3 +1,7 @@
+import matplotlib
+matplotlib.use('Agg') 
+import matplotlib.pyplot as plt
+plt.ioff() 
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
