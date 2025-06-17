@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 import uuid
@@ -10,9 +10,6 @@ from utils.ytvideo_summarizer import process_video
 from utils.detailDoc_summarizer import summarize_all_in_detail
 from unstructured.partition.docx import partition_docx
 from utils.visuaLens import extract_and_summarize_image
-
-
-# Vectorization imports
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.storage import InMemoryStore
@@ -20,10 +17,12 @@ from langchain.schema.document import Document
 from langchain.retrievers.multi_vector import MultiVectorRetriever
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.docstore.document import Document
-
-
-# Question answering import
 from utils.question import answer_question_legacy
+from google.oauth2 import id_token
+from google.auth.transport import requests
+import os
+from dotenv import load_dotenv
+import re
 
 load_dotenv()
 
@@ -37,7 +36,94 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global storage for retrievers (in production, use Redis or database)
+SECRET_KEY = os.getenv("NEXTAUTH_SECRET")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+
+def verify_token(
+    authorization: str = Header(...),
+    x_user_provider: str = Header(None, alias="X-User-Provider")
+):
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=403, detail="Invalid auth header")
+
+    token = authorization[7:] 
+    provider = x_user_provider or "unknown"
+
+    try:
+        if provider == "google":
+            return verify_google_token(token)
+        elif provider == "credentials":
+            return verify_credentials_token(token)
+        else:
+            return auto_detect_and_verify(token)
+            
+    except Exception as e:
+        print(f"Token verification failed: {str(e)}")
+        raise HTTPException(status_code=403, detail="Token verification failed")
+
+def verify_google_token(token: str):
+    try:
+        import requests as http_requests
+        
+        response = http_requests.get(
+            f"https://www.googleapis.com/oauth2/v1/tokeninfo?access_token={token}",
+            timeout=10
+        )
+        
+        if response.status_code != 200:
+            raise HTTPException(status_code=403, detail="Invalid Google access token")
+        
+        token_info = response.json()
+
+        return {
+            "provider": "google",
+            "user_id": token_info.get("user_id"),
+            "email": token_info.get("email"),
+            "expires_in": token_info.get("expires_in"),
+            "scope": token_info.get("scope")
+        }
+        
+    except http_requests.RequestException as e:
+        print(f"Google token verification failed: {str(e)}")
+        raise HTTPException(status_code=403, detail="Failed to verify Google token")
+    except Exception as e:
+        print(f"Google token verification error: {str(e)}")
+        raise HTTPException(status_code=403, detail="Invalid Google token")
+
+def verify_credentials_token(token: str):
+    try:
+        if not re.match(r'^[a-fA-F0-9]{24}$', token):
+            raise HTTPException(status_code=403, detail="Invalid user ID format")
+
+        return {
+            "provider": "credentials",
+            "user_id": token,
+            "_id": token
+        }
+        
+    except Exception as e:
+        print(f"Credentials token verification failed: {str(e)}")
+        raise HTTPException(status_code=403, detail="Invalid credentials token")
+
+def auto_detect_and_verify(token: str):
+    try:
+        if len(token) > 100 or '.' in token:
+            try:
+                return verify_google_token(token)
+            except:
+                pass
+        
+        if re.match(r'^[a-fA-F0-9]{24}$', token):
+            return verify_credentials_token(token)
+        
+        raise HTTPException(status_code=403, detail="Unrecognized token format")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Auto-detection failed: {str(e)}")
+        raise HTTPException(status_code=403, detail="Token verification failed")
+
 retrievers_store = {}
 
 def extract_pdf_content_from_bytes(file_content: bytes, filename: str):
@@ -244,14 +330,14 @@ def vectorize_text(summary: str, persist_directory: str = None):
 async def vectorize(
     mode: str = Form(...),
     file: Optional[UploadFile] = File(None),
-    url: Optional[str] = Form(None)
+    url: Optional[str] = Form(None),
+    user: dict = Depends(verify_token) 
 ):
     extracted_content = None
     extracted_Image_Content = None
     retriever = None
 
     try:
-        # Validate inputs upfront
         if mode not in ["briefDoc", "sumTube", "detailDoc", "visuaLens"]:
             raise HTTPException(status_code=400, detail="Invalid mode specified")
 
@@ -292,7 +378,7 @@ async def vectorize(
             extracted_Image_Content = {
                 "texts": [summary_for_vector],
                 "tables": [],
-                "images": []  # Optional, if you want to include image bytes or placeholders
+                "images": []  
             }
 
 
@@ -383,7 +469,6 @@ async def vectorize(
 
 
         if(mode == "sumTube"):
-            # For video summaries, we don't need to store a session
             return {
                 "success": True,
                 "mode": mode,
@@ -408,8 +493,6 @@ async def vectorize(
                 "result": result
             }
 
-    except HTTPException:
-        raise
     except Exception as e:
         print(f"Unexpected error: {e}")
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
@@ -419,11 +502,11 @@ async def query_document(
     session_id: Optional[str] = Form(None),
     video_id: Optional[str] = Form(None),
     question: str = Form(...),
-    k: int = Form(5)  # Number of top results to retrieve
+    k: int = Form(5),  # Number of top results to retrieve
+    user: dict = Depends(verify_token) 
 ):
 
     try:
-        # Decide retriever key based on availability
         key = session_id if session_id else video_id
         
         if not key or key not in retrievers_store:
@@ -431,13 +514,10 @@ async def query_document(
         
         retriever = retrievers_store.get(key)
         
-        # Handle different retriever types
         if hasattr(retriever, 'search_kwargs'):
-            # This is a MultiVectorRetriever or VectorStoreRetriever
             retriever.search_kwargs = {"k": k}
             relevant_docs = retriever.get_relevant_documents(question)
         else:
-            # This might be a direct Chroma vectorstore (fallback)
             relevant_docs = retriever.similarity_search(question, k=k)
         
         if not relevant_docs:
@@ -448,10 +528,8 @@ async def query_document(
                 "sources": []
             }
     
-        # Get answer using the question module
         answer = answer_question_legacy(question, relevant_docs)
-        print(f"answer:", answer)
-        
+
         return {
             "success": True,
             "question": question,

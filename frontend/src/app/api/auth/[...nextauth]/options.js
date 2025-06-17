@@ -13,31 +13,21 @@ export const authOptions = {
         email: { label: "Email", type: "text" },
         password: { label: "Password", type: "password" },
       },
-      async authorize(credentials, req) {
+      async authorize(credentials) {
         await dbConnect();
         try {
           const user = await UserModel.findOne({
             $or: [{ email: credentials.identifier }],
           });
 
-          if (!user) {
-            return null;
-          }
-
-          if (!user.isVerified) {
-            return null;
-          }
+          if (!user || !user.isVerified) return null;
 
           const isPasswordCorrect = await bcrypt.compare(
             credentials.password,
             user.password
           );
 
-          if (isPasswordCorrect) {
-            return user;
-          } else {
-            return null;
-          }
+          return isPasswordCorrect ? user : null;
         } catch (error) {
           return null;
         }
@@ -48,49 +38,67 @@ export const authOptions = {
       clientSecret: process.env.GOOGLE_CLIENT_SECRET,
     }),
   ],
+
   pages: {
     signIn: "/signIn",
   },
+
   session: {
     strategy: "jwt",
   },
   secret: process.env.NEXTAUTH_SECRET,
 
   callbacks: {
-    async signIn({ user, account }) {
+    async jwt({ token, user, account }) {
+      const now = Math.floor(Date.now() / 1000);
+
+      if (user) {
+        token.fullName = user.fullName || user.name;
+        token.email = user.email;
+      }
+
+      if (user && account?.provider === "credentials") {
+        token._id = user._id?.toString();
+        token.provider = "credentials";
+        token.accessToken = user._id?.toString();
+      }
+
       if (account?.provider === "google") {
+        token.provider = "google";
+        token.accessToken = account.access_token;
+        token.expiresAt = now + (account.expires_at || 3600);
+
         await dbConnect();
-
-        const existingUser = await UserModel.findOne({ email: user.email });
-
-        if (!existingUser) {
-          return false; 
-        }
-
-        if (!existingUser.isVerified) {
-          return false;
+        const dbUser = await UserModel.findOne({ email: user.email });
+        if (dbUser) {
+          token._id = dbUser._id?.toString();
+          token.fullName = dbUser.fullName;
         }
       }
 
-      return true;
+      if (token.provider === "google" && token.expiresAt) {
+        if (token.expiresAt < now) {
+          console.log("Google token expired, forcing logout");
+          return null;
+        }
+      }
+
+      return token;
     },
 
     async session({ session, token }) {
-      if (token) {
-        session.user._id = token._id?.toString();
-        session.user.isVerified = token.isVerified;
-        session.user.fullName = token.fullName;
+      if (!token) {
+        return null;
       }
-      return session;
-    },
 
-    async jwt({ token, user }) {
-      if (user) {
-        token._id = user._id?.toString();
-        token.isVerified = user.isVerified;
-        token.fullName = user.fullName;
-      }
-      return token;
+      session.user._id = token._id;
+      session.user.fullName = token.fullName;
+      session.user.email = token.email;
+      session.accessToken = token.accessToken;
+      session.provider = token.provider;
+      session.expiresAt = token.expiresAt;
+
+      return session;
     },
   },
 };

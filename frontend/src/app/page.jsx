@@ -48,8 +48,22 @@ export default function CampusCruxHome() {
   const [initialResult, setInitialResult] = useState(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-
-  const [dots, setDots] = useState([]); //Biggest error that I saw
+  const [dots, setDots] = useState([]);
+  const [showDownloadModal, setShowDownloadModal] = useState(false);
+  const [conversationName, setConversationName] = useState("");
+  const [selectedFolder, setSelectedFolder] = useState("");
+  const [newFolderName, setNewFolderName] = useState("");
+  const [showNewFolderInput, setShowNewFolderInput] = useState(false);
+  const [folders, setFolders] = useState([]);
+  const [expandedIndex, setExpandedIndex] = useState(null);
+  const [user, setUser] = useState(null);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const { data: session, status } = useSession();
+  const router = useRouter();
+  const recognition = useRef(null);
+  const fileInputRef = useRef(null);
+  const chatContainerRef = useRef(null);
+  const messagesEndRef = useRef(null);
 
   useEffect(() => {
     const newDots = Array.from({ length: 50 }, () => ({
@@ -60,26 +74,6 @@ export default function CampusCruxHome() {
     }));
     setDots(newDots);
   }, []);
-
-  const { data: session, status } = useSession();
-
-  // Authentication state
-  const [user, setUser] = useState(null);
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-
-  const router = useRouter();
-  const recognition = useRef(null);
-  const fileInputRef = useRef(null);
-  const chatContainerRef = useRef(null);
-  const messagesEndRef = useRef(null);
-
-  const [showDownloadModal, setShowDownloadModal] = useState(false);
-  const [conversationName, setConversationName] = useState("");
-  const [selectedFolder, setSelectedFolder] = useState("");
-  const [newFolderName, setNewFolderName] = useState("");
-  const [showNewFolderInput, setShowNewFolderInput] = useState(false);
-  const [folders, setFolders] = useState([]);
-  const [expandedIndex, setExpandedIndex] = useState(null);
 
   useEffect(() => {
     if (!user?.email) return;
@@ -94,8 +88,6 @@ export default function CampusCruxHome() {
 
         if (data.success) {
           setFolders(data.folders);
-        } else {
-          console.warn("Using fallback folders due to API failure");
         }
       } catch (error) {
         console.error("Error fetching folders:", error);
@@ -105,35 +97,12 @@ export default function CampusCruxHome() {
     fetchFolders();
   }, [user?.email]);
 
-  // Modified handleDownloadConversation function
-  const handleDownloadConversation = (conversation) => {
-    // Auto-generate title from first user message
+  const handleDownloadConversation = () => {
     setConversationName("");
     setShowDownloadModal(true);
   };
 
-  // Function to save conversation to database
-  const saveConversationToDatabase = async (conversationData) => {
-    const userEmail = user?.email;
-    try {
-      const response = await axios.post("/api/conversations", {
-        userEmail,
-        conversationData,
-      });
-
-      if (response.data.success) {
-        console.log("Conversation saved:", response.data);
-        return response.data;
-      } else {
-        throw new Error("Failed to save conversation");
-      }
-    } catch (error) {
-      console.error("Error saving conversation:", error);
-      throw error;
-    }
-  };
-
-  // Function to create new folder
+  const controllerRef = useRef(null);
   const handleCreateNewFolder = async () => {
     const folderName = newFolderName.trim();
     const userEmail = user?.email;
@@ -149,20 +118,33 @@ export default function CampusCruxHome() {
       return;
     }
 
-    setCreatingFolder(true); // 🟡 Start loading
+    if (controllerRef.current) {
+      controllerRef.current.abort();
+    }
+
+    controllerRef.current = new AbortController();
+
+    setCreatingFolder(true);
+
     try {
-      const response = await axios.post("/api/createFolder", {
-        userEmail,
-        folderName,
-      });
+      const response = await axios.post(
+        "/api/createFolder",
+        {
+          userEmail,
+          folderName,
+        },
+        {
+          signal: controllerRef.current.signal,
+        }
+      );
 
       const data = response.data;
-      console.log(data);
 
       if (data.success) {
         setFolders((prev) => [...prev, data.folder]);
         setSelectedFolder(
-          data.folder.folderName?.toString() || data.folder.folderName?.toString()
+          data.folder.folderName?.toString() ||
+            data.folder.folderName?.toString()
         );
         setNewFolderName("");
         setShowNewFolderInput(false);
@@ -170,28 +152,46 @@ export default function CampusCruxHome() {
         showToastMessage2("Failed to create folder: " + data.message);
       }
     } catch (error) {
-      console.error("Error creating folder:", error);
-      showToastMessage2("An error occurred while creating the folder.");
+      if (axios.isCancel?.(error) || error.name === "CanceledError") {
+        console.log("Folder creation cancelled");
+      } else {
+        showToastMessage2("An error occurred while creating the folder.");
+      }
     } finally {
-      setCreatingFolder(false); // 🟢 Stop loading
+      setCreatingFolder(false);
     }
   };
 
-  // Function to handle conversation save
+  const handleCancel = () => {
+    if (controllerRef.current) {
+      controllerRef.current.abort();
+    }
+    setShowNewFolderInput(false);
+    setNewFolderName("");
+  };
+
+  const saveControllerRef = useRef(null);
+
   const handleSaveConversation = async () => {
     setIsSaving(true);
+
     if (!conversationName.trim()) {
       showToastMessage2("Please provide a conversation name");
       setIsSaving(false);
       return;
     }
+
     if (selectedFolder === "") {
-      showToastMessage2("Please Select a folder");
+      showToastMessage2("Please select a folder");
       setIsSaving(false);
       return;
     }
-    console.log(selectedFolder);
-    console.log(folders);
+
+    if (saveControllerRef.current) {
+      saveControllerRef.current.abort();
+    }
+
+    saveControllerRef.current = new AbortController();
 
     try {
       const selectedFolderData = selectedFolder
@@ -206,27 +206,41 @@ export default function CampusCruxHome() {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
+      const userEmail = user?.email;
+      const response = await axios.post(
+        "/api/conversations",
+        { userEmail, conversationData },
+        {
+          signal: saveControllerRef.current.signal,
+        }
+      );
 
-      console.log(conversationData);
+      if (!response.data.success) {
+        showToastMessage("Failed to save conversation");
+        throw new Error("Failed to save conversation");
+      }
 
-      await saveConversationToDatabase(conversationData);
-
-      // Close modal and reset state
       setShowDownloadModal(false);
       setConversationName("");
       setSelectedFolder("");
       setShowNewFolderInput(false);
       setNewFolderName("");
-      // Show success message
       showToastMessage("Conversation saved successfully!");
     } catch (error) {
-      alert("Error saving conversation: " + error.message);
+      if (axios.isCancel?.(error) || error.name === "CanceledError") {
+        console.log("Conversation save cancelled");
+      } else {
+        showToastMessage("Error saving conversation: " + error.message);
+      }
+    } finally {
+      setIsSaving(false);
     }
-    setIsSaving(false);
   };
 
-  // Function to close modal
   const handleCloseDownloadModal = () => {
+    if (saveControllerRef.current) {
+      saveControllerRef.current.abort();
+    }
     setShowDownloadModal(false);
     setConversationName("");
     setSelectedFolder("");
@@ -234,18 +248,28 @@ export default function CampusCruxHome() {
     setNewFolderName("");
   };
 
-  // Simulate user data
   useEffect(() => {
-    const checkAuthStatus = () => {
-      if (status === "authenticated" && session?.user) {
-        setUser(session.user);
-        setIsLoggedIn(true);
+    if (status === "authenticated" && session?.user) {
+      setUser(session.user);
+      setIsLoggedIn(true);
+    }
+    if (session?.provider === "google" && session?.expiresAt) {
+      const now = Math.floor(Date.now() / 1000);
+      const timeUntilExpiry = session?.expiresAt - now;
+
+      if (timeUntilExpiry <= 0) {
+        signOut({ callbackUrl: "/signIn", redirect: true });
+      } else if (timeUntilExpiry < 300) {
+        showToastMessage("Session gonna expire soon...");
+        const timer = setTimeout(() => {
+          signOut({ callbackUrl: "/signIn", redirect: true });
+        }, timeUntilExpiry * 1000);
+
+        return () => clearTimeout(timer);
       }
-    };
-    checkAuthStatus();
+    }
   }, [session, status]);
 
-  // Auto scroll to bottom of chat
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
@@ -254,7 +278,6 @@ export default function CampusCruxHome() {
     scrollToBottom();
   }, [conversation]);
 
-  // Mode configurations
   const modes = {
     briefDoc: {
       icon: FileText,
@@ -290,7 +313,6 @@ export default function CampusCruxHome() {
     },
   };
 
-  // Toast function
   const showToastMessage = (message) => {
     setToastMessage(message);
     setShowToast(true);
@@ -303,7 +325,6 @@ export default function CampusCruxHome() {
     setTimeout(() => setShowToast2(false), 3000);
   };
 
-  // Handle user icon click
   const handleUserIconClick = () => {
     if (!isLoggedIn) {
       router.push("/signIn");
@@ -312,7 +333,6 @@ export default function CampusCruxHome() {
     }
   };
 
-  // Handle logout
   const handleLogout = () => {
     signOut({ callbackUrl: "/" });
     setUser(null);
@@ -329,7 +349,6 @@ export default function CampusCruxHome() {
     router.push("/spaces");
   };
 
-  // Check authentication before file operations
   const checkAuthForFileOperation = () => {
     if (!isLoggedIn) {
       showToastMessage("Please login first to upload files");
@@ -338,7 +357,6 @@ export default function CampusCruxHome() {
     return true;
   };
 
-  // Speech recognition setup
   useEffect(() => {
     if (!recognition.current) {
       recognition.current = new window.webkitSpeechRecognition();
@@ -355,7 +373,7 @@ export default function CampusCruxHome() {
       };
 
       recognition.current.onerror = (event) => {
-        console.error("Speech recognition error:", event.error);
+        showToastMessage("Speech recognition error:", event.error);
       };
     }
   }, [isListening]);
@@ -407,9 +425,7 @@ export default function CampusCruxHome() {
     setSearchValue(e.target.value);
   };
 
-  // Format summary for display
   const formatSummary = (summaries) => {
-    // Handle null, undefined, or empty cases
     if (!summaries) {
       return (
         <div className="text-gray-400 italic text-center py-4">
@@ -418,7 +434,6 @@ export default function CampusCruxHome() {
       );
     }
 
-    // Handle string summary (for sumTube mode)
     if (typeof summaries === "string") {
       return (
         <div className="mb-6 p-6 bg-gray-800/40 rounded-2xl shadow-md hover:shadow-lg transition-shadow duration-300 text-gray-100 text-base md:text-lg prose prose-invert max-w-none prose-pre:bg-gray-900 prose-code:bg-gray-900 prose-code:text-gray-100 prose-code:px-1 prose-code:rounded">
@@ -431,7 +446,6 @@ export default function CampusCruxHome() {
       );
     }
 
-    // Handle array summaries (for file modes)
     if (Array.isArray(summaries)) {
       if (summaries.length === 0) {
         return (
@@ -450,7 +464,6 @@ export default function CampusCruxHome() {
       ));
     }
 
-    // Handle object or other types
     return (
       <div className="text-gray-400 italic text-center py-4">
         Unable to display summary format.
@@ -458,7 +471,6 @@ export default function CampusCruxHome() {
     );
   };
 
-  // Initial file upload and processing
   const handleInitialSearch = async () => {
     if (!selectedMode) return;
 
@@ -469,7 +481,6 @@ export default function CampusCruxHome() {
     setLoading(true);
 
     try {
-      const endpoint = "http://127.0.0.1:8000/vectorize";
       const formData = new FormData();
       formData.append("mode", selectedMode);
 
@@ -480,19 +491,18 @@ export default function CampusCruxHome() {
         formData.append("file", file);
       }
 
-      const res = await fetch(endpoint, {
-        method: "POST",
-        body: formData,
-      });
+      const res = await axios.post("/api/initialSearch", formData);
 
-      if (!res.ok) throw new Error("Failed to process");
+      const data = res.data;
 
-      const data = await res.json();
       setInitialResult(data);
       setIsChat(true);
-      if (selectedMode == "sumTube") {
+
+      let initialMessage;
+
+      if (selectedMode === "sumTube") {
         setVideoId(data.result.video_id);
-        const initialMessage = {
+        initialMessage = {
           type: "assistant",
           content: {
             mode: selectedMode,
@@ -501,10 +511,9 @@ export default function CampusCruxHome() {
           },
           timestamp: new Date(),
         };
-        setConversation([initialMessage]);
-      } else if (selectedMode == "visuaLens") {
+      } else if (selectedMode === "visuaLens") {
         setSessionId(data.session_id);
-        const initialMessage = {
+        initialMessage = {
           type: "assistant",
           content: {
             mode: selectedMode,
@@ -512,11 +521,9 @@ export default function CampusCruxHome() {
           },
           timestamp: new Date(),
         };
-        setConversation([initialMessage]);
       } else {
         setSessionId(data.session_id);
-        // Add initial message to conversation
-        const initialMessage = {
+        initialMessage = {
           type: "assistant",
           content: {
             mode: selectedMode,
@@ -530,14 +537,18 @@ export default function CampusCruxHome() {
           },
           timestamp: new Date(),
         };
-        setConversation([initialMessage]);
       }
+
+      setConversation([initialMessage]);
       setSearchValue("");
     } catch (err) {
+      console.error(err);
       if (selectedMode === "sumTube") {
-        showToastMessage(
-          "Failed to process link. Please provide a valid link and try again."
-        );
+        if (err.status == 500) {
+          showToastMessage(
+            "Failed to process link. Please provide a valid link and try again."
+          );
+        }
       } else if (selectedMode === "visuaLens") {
         showToastMessage(
           "Failed to process image. Please select a valid image file."
@@ -561,7 +572,7 @@ export default function CampusCruxHome() {
     setSessionId(null);
     showToastMessage("New Chat");
   };
-  // Handle follow-up questions
+
   const handleQuestionSubmit = async () => {
     if (!searchValue.trim() || (!sessionId && !videoId)) return;
 
@@ -577,19 +588,13 @@ export default function CampusCruxHome() {
 
     try {
       const formData = new FormData();
-      if (sessionId) {
-        formData.append("session_id", sessionId);
-      } else if (videoId) {
-        formData.append("video_id", videoId);
-      }
+      if (sessionId) formData.append("session_id", sessionId);
+      if (videoId) formData.append("video_id", videoId);
       formData.append("question", userMessage.content);
 
-      const response = await fetch("http://127.0.0.1:8000/query", {
-        method: "POST",
-        body: formData,
-      });
+      const res = await axios.post("/api/questionSubmit", formData);
 
-      const data = await response.json();
+      const data = res.data;
 
       const assistantMessage = {
         type: "assistant",
@@ -603,7 +608,6 @@ export default function CampusCruxHome() {
 
       setConversation((prev) => [...prev, assistantMessage]);
     } catch (err) {
-      console.error("Query error:", err);
       const errorMessage = {
         type: "assistant",
         content:
@@ -629,102 +633,13 @@ export default function CampusCruxHome() {
 
   const IconComponent = selectedMode ? modes[selectedMode].icon : null;
 
-  const renderMessage = (message, index) => {
-    if (message.type === "user") {
-      return (
-        <div key={index} className="flex justify-end mb-6">
-          <div className="max-w-[80%] bg-gradient-to-r from-purple-600 to-cyan-600 text-white px-4 py-3 rounded-2xl rounded-tr-md">
-            <div className="whitespace-pre-wrap">{message.content}</div>
-          </div>
-          <div className="flex-shrink-0 ml-3 w-8 h-8 bg-gradient-to-r from-purple-500 to-cyan-500 rounded-full flex items-center justify-center">
-            <User className="w-4 h-4 text-white" />
-          </div>
-        </div>
-      );
-    }
-
-    // Assistant message
-    return (
-      <div key={index} className="flex justify-start mb-6">
-        <div className="flex-shrink-0 mr-3 w-8 h-8 bg-gradient-to-r from-purple-500 to-cyan-500 rounded-full flex items-center justify-center">
-          <MessageSquare className="w-4 h-4 text-white" />
-        </div>
-        <div className="max-w-[80%] bg-gray-800/50 backdrop-blur-xl border border-white/10 text-white px-4 py-3 rounded-2xl rounded-tl-md">
-          {typeof message.content === "string" ? (
-            <div className="whitespace-pre-wrap">{message.content}</div>
-          ) : (
-            <div>
-              {/* Handle sumTube mode */}
-              {message.content.mode === "sumTube" ? (
-                <div>
-                  {/* Video Summary for sumTube */}
-                  {message.content.summary && (
-                    <div>
-                      <h4 className="font-semibold text-purple-300 mb-3">
-                        Video Summary:
-                      </h4>
-                      {formatSummary(message.content.summary)}
-                    </div>
-                  )}
-                  <div className="mt-3 text-sm text-gray-400">
-                    You can now ask questions about this video!
-                  </div>
-                </div>
-              ) : (
-                <div>
-                  {/* File info for other modes */}
-                  {message.content.fileName && (
-                    <div className="flex items-center mb-3 p-2 bg-gray-700/30 rounded-lg">
-                      <FileCheck className="w-4 h-4 text-green-400 mr-2" />
-                      <span className="text-sm text-gray-300">
-                        Processed: {message.content.fileName}
-                      </span>
-                    </div>
-                  )}
-
-                  {/* Summary for file modes */}
-                  {message.content.summary &&
-                    message.content.summary.length > 0 && (
-                      <div>
-                        <h4 className="font-semibold text-purple-300 mb-3">
-                          Document Summary:
-                        </h4>
-                        {formatSummary(message.content.summary)}
-                      </div>
-                    )}
-
-                  {/* Metadata info */}
-                  {message.content.metadata && (
-                    <div className="mt-4 p-3 bg-gray-700/20 rounded-lg">
-                      <div className="text-sm text-gray-400">
-                        Processed&nbsp;
-                        {(message.content.metadata.texts_count || 0) +
-                          (message.content.metadata.images_count || 0) +
-                          (message.content.metadata.tables_count || 0)}{" "}
-                        sections
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="mt-3 text-sm text-gray-400">
-                    You can now ask questions about this document!
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  };
-
   const renderInputField = () => {
     if (isChat) {
       return (
         <input
           type="text"
           placeholder="Ask a question about the document..."
-          value={searchValue || ""} // Fix: Ensure never undefined
+          value={searchValue || ""}
           onChange={(e) => setSearchValue(e.target.value)}
           onKeyPress={handleKeyPress}
           className="flex-1 bg-transparent px-6 py-4 text-white placeholder-gray-400 focus:outline-none text-lg"
@@ -737,7 +652,7 @@ export default function CampusCruxHome() {
         <input
           type="text"
           placeholder="Select a mode first..."
-          value="" // Fix: Always provide a value
+          value=""
           disabled
           className="flex-1 bg-transparent px-6 py-4 text-gray-500 placeholder-gray-500 focus:outline-none text-lg cursor-not-allowed"
         />
@@ -751,7 +666,7 @@ export default function CampusCruxHome() {
         <input
           type="url"
           placeholder={mode.placeholder}
-          value={searchValue || ""} // Fix: Ensure never undefined
+          value={searchValue || ""}
           onChange={handleUrlChange}
           onKeyPress={handleKeyPress}
           className="flex-1 bg-transparent px-6 py-4 text-white placeholder-gray-400 focus:outline-none text-lg"
@@ -764,7 +679,7 @@ export default function CampusCruxHome() {
         <input
           type="text"
           placeholder={mode.placeholder}
-          value={searchValue || ""} // Fix: Ensure never undefined
+          value={searchValue || ""}
           readOnly
           disabled={loading}
           className={`flex-1 bg-transparent px-6 py-4 text-white placeholder-gray-400 focus:outline-none text-lg ${
@@ -794,7 +709,6 @@ export default function CampusCruxHome() {
 
     return (
       <div className="flex items-center space-x-2 px-2">
-        {/* File Upload Button (for file modes) */}
         {mode.type === "file" && !isChat && !loading && (
           <button
             onClick={() => {
@@ -818,7 +732,6 @@ export default function CampusCruxHome() {
             </button>
           )}
 
-        {/* Voice Input Button */}
         {isChat && (
           <button
             onClick={toggleListening}
@@ -832,7 +745,6 @@ export default function CampusCruxHome() {
           </button>
         )}
 
-        {/* Submit Button */}
         <div className="relative flex justify-center items-center">
           <div className="absolute inset-0 bg-gradient-to-r from-purple-500 to-cyan-500 rounded-xl blur-md opacity-75"></div>
           <button
@@ -845,7 +757,7 @@ export default function CampusCruxHome() {
             {loading ? (
               <Loader className="w-5 h-5 animate-spin" />
             ) : isChat ? (
-              <Send className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
+              <Send className="w-5 h-5 group-hover:rotate-12 transition-transform" />
             ) : (
               <Search className="w-5 h-5 group-hover:rotate-12 transition-transform" />
             )}
@@ -857,7 +769,6 @@ export default function CampusCruxHome() {
 
   return (
     <div className="relative min-h-screen w-full overflow-hidden bg-gray-900">
-      {/* Toast Notification */}
       {showToast && (
         <div className="fixed top-4 right-4 z-50 bg-gradient-to-r from-red-500 to-pink-500 text-white px-6 py-3 rounded-lg shadow-lg transform transition-all duration-300 animate-pulse">
           {toastMessage}
@@ -869,7 +780,6 @@ export default function CampusCruxHome() {
         </div>
       )}
 
-      {/* User Modal */}
       {showUserModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="bg-gray-800 rounded-2xl p-8 max-w-md w-full mx-4 border border-white/10 relative">
@@ -942,7 +852,6 @@ export default function CampusCruxHome() {
             </div>
 
             <div className="space-y-6">
-              {/* Conversation Name Input */}
               <div>
                 <label className="block text-gray-400 text-sm mb-2">
                   Conversation Name *
@@ -956,7 +865,6 @@ export default function CampusCruxHome() {
                 />
               </div>
 
-              {/* Folder Selection */}
               <div>
                 <label className="block text-gray-400 text-sm mb-2">
                   Select Folder *
@@ -978,7 +886,6 @@ export default function CampusCruxHome() {
                 </select>
               </div>
 
-              {/* Create New Folder */}
               <div>
                 {!showNewFolderInput ? (
                   <button
@@ -1004,7 +911,7 @@ export default function CampusCruxHome() {
                       <button
                         onClick={handleCreateNewFolder}
                         className="cursor-pointer bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm transition-colors flex items-center gap-2"
-                        disabled={creatingFolder} // ✅ prevent double-clicks
+                        disabled={creatingFolder}
                       >
                         {creatingFolder ? (
                           <>
@@ -1035,10 +942,7 @@ export default function CampusCruxHome() {
                         )}
                       </button>
                       <button
-                        onClick={() => {
-                          setShowNewFolderInput(false);
-                          setNewFolderName("");
-                        }}
+                        onClick={handleCancel}
                         className="cursor-pointer bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-lg text-sm transition-colors"
                       >
                         Cancel
@@ -1048,7 +952,6 @@ export default function CampusCruxHome() {
                 )}
               </div>
 
-              {/* Available Folders Display */}
               {folders.length > 0 && (
                 <div>
                   <h4 className="text-gray-400 text-sm mb-2">
@@ -1067,6 +970,7 @@ export default function CampusCruxHome() {
                   </div>
                 </div>
               )}
+
               {folders.length === 0 && (
                 <div>
                   <h4 className="text-gray-400 text-sm mb-2">
@@ -1078,7 +982,6 @@ export default function CampusCruxHome() {
                 </div>
               )}
 
-              {/* Action Buttons */}
               <div className="flex gap-3 pt-4">
                 <button
                   onClick={handleSaveConversation}
@@ -1162,7 +1065,6 @@ export default function CampusCruxHome() {
       </div>
 
       <div className="relative z-10 min-h-screen text-white flex">
-        {/* Enhanced Sidebar - Fixed */}
         <div className="fixed left-0 top-0 h-screen w-20 bg-gray-800/50 backdrop-blur-xl border-r border-white/10 flex flex-col items-center py-6 space-y-6 z-50">
           <div className="relative group">
             <div className="absolute inset-0 bg-gradient-to-r from-purple-500 to-cyan-500 rounded-xl blur-lg opacity-50 group-hover:opacity-75 transition-opacity"></div>
@@ -1245,12 +1147,9 @@ export default function CampusCruxHome() {
           </div>
         </div>
 
-        {/* Main Content with left margin to account for fixed sidebar */}
         <div className="flex-1 flex flex-col ml-20">
           {!isChat ? (
-            // Initial landing page
             <div className="flex-1 flex flex-col items-center justify-center px-8">
-              {/* Logo Section */}
               <div
                 className={`mb-16 transform transition-all duration-1000 ${
                   isLoaded
@@ -1259,14 +1158,11 @@ export default function CampusCruxHome() {
                 }`}
               >
                 <div className="relative flex items-center justify-center">
-                  {/* Background Glow Behind Logo + Heading */}
                   <div className="absolute inset-0 flex items-center justify-center">
                     <div className="w-72 h-72 bg-white/10 rounded-full blur-3xl"></div>
                   </div>
 
-                  {/* Foreground Content */}
                   <div className="relative z-10 flex items-center space-x-6">
-                    {/* Logo */}
                     <div className="w-40 h-40 relative">
                       <img
                         src="/logo.png"
@@ -1275,7 +1171,6 @@ export default function CampusCruxHome() {
                       />
                     </div>
 
-                    {/* Glowing Heading */}
                     <h1 className="text-6xl font-light tracking-wide text-center text-white drop-shadow-[0_0_12px_white]">
                       <span className="bg-gradient-to-r from-white via-purple-200 to-cyan-200 bg-clip-text text-transparent">
                         Synthia
@@ -1285,7 +1180,6 @@ export default function CampusCruxHome() {
                 </div>
               </div>
 
-              {/* Mode Selection Indicator */}
               {selectedMode && (
                 <div className="mb-4 flex items-center space-x-2">
                   <div
@@ -1308,7 +1202,6 @@ export default function CampusCruxHome() {
                 </div>
               )}
 
-              {/* Enhanced Search Bar */}
               <div
                 className={`w-full max-w-3xl mb-12 transform transition-all duration-1000 delay-300 ${
                   isLoaded
@@ -1317,7 +1210,6 @@ export default function CampusCruxHome() {
                 }`}
               >
                 <div className="relative group">
-                  {/* Search Bar Glow */}
                   <div
                     className={`absolute inset-0 bg-gradient-to-r ${
                       selectedMode
@@ -1328,7 +1220,6 @@ export default function CampusCruxHome() {
                     } rounded-2xl blur-xl group-focus-within:opacity-100 opacity-50 transition-opacity`}
                   ></div>
 
-                  {/* Main Search Container */}
                   <div
                     className={`relative bg-gray-800/50 backdrop-blur-xl border ${
                       selectedMode ? "border-white/20" : "border-white/10"
@@ -1342,7 +1233,6 @@ export default function CampusCruxHome() {
                 </div>
               </div>
 
-              {/* Enhanced Action Buttons */}
               <div
                 className={`flex flex-wrap gap-4 justify-center max-w-4xl transform transition-all duration-1000 delay-500 ${
                   isLoaded
@@ -1366,45 +1256,37 @@ export default function CampusCruxHome() {
                     }`}
                     style={{ transitionDelay: `${index * 100}ms` }}
                   >
-                    {/* Button Glow */}
                     <div
                       className={`absolute inset-0 bg-gradient-to-r ${mode.gradient} rounded-2xl blur-xl opacity-0 group-hover:opacity-20 transition-opacity duration-300 z-0 pointer-events-none`}
                     ></div>
 
-                    {/* Icon */}
                     <div
                       className={`relative z-10 p-2 bg-gradient-to-r ${mode.gradient} rounded-lg`}
                     >
                       <mode.icon className="w-5 h-5 text-white" />
                     </div>
 
-                    {/* Label */}
                     <span className="relative z-10 font-medium group-hover:text-white transition-colors">
                       {mode.label}
                     </span>
 
-                    {/* Selection Indicator */}
                     <div className="relative z-10 w-5 h-5">
                       {selectedMode === key && (
                         <CheckCircle className="w-5 h-5 text-white" />
                       )}
                     </div>
 
-                    {/* Hover Effect Overlay */}
                     <div className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/5 to-white/0 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-600 rounded-2xl z-0 pointer-events-none"></div>
                   </button>
                 ))}
               </div>
 
-              {/* Floating Elements */}
               <div className="absolute top-20 right-20 w-4 h-4 bg-purple-500 rounded-full animate-bounce opacity-60"></div>
               <div className="absolute bottom-32 left-32 w-3 h-3 bg-cyan-500 rounded-full animate-ping opacity-60"></div>
               <div className="absolute top-1/3 right-1/4 w-2 h-2 bg-pink-500 rounded-full animate-pulse opacity-60"></div>
             </div>
           ) : (
-            // Chat Interface
             <div className="flex-1 flex flex-col h-screen">
-              {/* Chat Header - Fixed */}
               <div className="fixed top-0 right-0 left-20 z-40 flex items-center justify-between p-6 border-b border-white/10 bg-gray-800/30 backdrop-blur-xl">
                 <div className="flex items-center space-x-3">
                   {selectedMode && (
@@ -1442,7 +1324,6 @@ export default function CampusCruxHome() {
                 </button>
               </div>
 
-              {/* Chat Messages - Scrollable area with proper spacing */}
               <div
                 ref={chatContainerRef}
                 className="flex-1 overflow-y-auto p-6 space-y-6 mb-24 mt-20"
@@ -1472,7 +1353,6 @@ export default function CampusCruxHome() {
                         <MessageSquare className="w-5 h-5 text-white" />
                       </div>
                       <div className="max-w-[85%] space-y-4">
-                        {/* Video Thumbnail - Only for first message */}
                         {isFirstMessage && hasVideoThumbnail && (
                           <div className="relative rounded-xl overflow-hidden shadow-2xl max-w-lg mb-4">
                             <img
@@ -1495,7 +1375,6 @@ export default function CampusCruxHome() {
                           </div>
                         )}
 
-                        {/* Message Text Content */}
                         <div className="bg-gray-800/60 backdrop-blur-xl border border-white/10 text-white px-6 py-4 rounded-2xl rounded-tl-md shadow-lg space-y-4">
                           {(selectedMode === "visuaLens" ||
                             selectedMode === "detailDoc" ||
@@ -1503,14 +1382,12 @@ export default function CampusCruxHome() {
                             selectedMode === "briefDoc") &&
                           message.content?.answer ? (
                             <>
-                              {/* Answer */}
                               <div>
                                 <div className="text-white text-sm leading-relaxed whitespace-pre-wrap">
                                   {formatSummary(message.content.answer)}
                                 </div>
                               </div>
 
-                              {/* Sources */}
                               {message.content.sources?.length > 0 && (
                                 <div className="mt-4 max-w-6xl">
                                   <p className="font-semibold text-purple-300 text-sm mb-2">
@@ -1547,7 +1424,6 @@ export default function CampusCruxHome() {
                               )}
                             </>
                           ) : (
-                            // default summary block (e.g. for sumTube mode)
                             <div className="prose prose-invert prose-sm max-w-none">
                               {formatSummary(message.content.summary)}
                             </div>
@@ -1576,7 +1452,6 @@ export default function CampusCruxHome() {
                 <div ref={messagesEndRef} />
               </div>
 
-              {/* Chat Input - Fixed at bottom */}
               <div className="fixed bottom-0 right-0 left-20 z-40 p-6 border-t border-white/10 bg-gray-800/30 backdrop-blur-xl">
                 <div className="relative group">
                   <div className="absolute inset-0 bg-gradient-to-r from-purple-500/20 to-cyan-500/20 rounded-2xl blur-xl group-focus-within:opacity-100 opacity-50 transition-opacity"></div>
@@ -1593,7 +1468,6 @@ export default function CampusCruxHome() {
         </div>
       </div>
 
-      {/* Custom Styles */}
       <style jsx>{`
         .bg-gradient-radial {
           background: radial-gradient(circle, var(--tw-gradient-stops));

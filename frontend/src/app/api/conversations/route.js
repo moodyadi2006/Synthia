@@ -1,18 +1,19 @@
 import dbConnect from "@/lib/dbConnect";
 import UserModel from "@/model/User";
 import { NextResponse } from "next/server";
+import { authOptions } from "../auth/[...nextauth]/options";
+import { getServerSession } from "next-auth";
 
 export async function POST(request) {
+  const session = await getServerSession(authOptions);
+
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   await dbConnect();
 
   try {
     const { userEmail, conversationData } = await request.json();
-    console.log(
-      "Creating conversation for:",
-      userEmail,
-      "with conversation :",
-      conversationData
-    );
 
     const user = await UserModel.findOne({ email: userEmail });
 
@@ -27,10 +28,10 @@ export async function POST(request) {
     }
 
     const folder = user.folders.find(
-      (f) => f?.folderName?.toString() === conversationData.folderName?.toString()
+      (f) =>
+        f?.folderName?.toString() === conversationData.folderName?.toString()
     );
-    // Find folder by subdocument _id
-    console.log(folder);
+
     if (!folder) {
       return NextResponse.json(
         {
@@ -41,7 +42,6 @@ export async function POST(request) {
       );
     }
 
-    // Push conversation into the folder's conversations array
     folder.conversations.push({
       id: conversationData.id,
       name: conversationData.name,
@@ -61,7 +61,6 @@ export async function POST(request) {
       { status: 201 }
     );
   } catch (error) {
-    console.error("Error creating conversation:", error);
     return NextResponse.json(
       {
         success: false,

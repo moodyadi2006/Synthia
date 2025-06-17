@@ -56,7 +56,6 @@ export async function POST(request) {
       );
     }
   } catch (error) {
-    console.error("Error verifying user:", error);
     return Response.json(
       {
         success: false,

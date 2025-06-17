@@ -1,12 +1,18 @@
 import dbConnect from "@/lib/dbConnect";
 import UserModel from "@/model/User";
+import { authOptions } from "../auth/[...nextauth]/options";
+import { getServerSession } from "next-auth";
 
 export async function POST(request) {
+  const session = await getServerSession(authOptions);
+
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   await dbConnect();
 
   try {
     const { userEmail, folderName } = await request.json();
-    console.log(userEmail);
 
     const user = await UserModel.findOne({ email: userEmail });
 

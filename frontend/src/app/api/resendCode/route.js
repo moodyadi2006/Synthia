@@ -31,7 +31,6 @@ export async function POST(request) {
       );
     }
 
-    // Generate new verification code and expiry
     const verifyCode = Math.floor(100000 + Math.random() * 900000).toString();
     const expiryDate = new Date();
     expiryDate.setMinutes(expiryDate.getMinutes() + 10);
@@ -64,7 +63,6 @@ export async function POST(request) {
       { status: 200 }
     );
   } catch (error) {
-    console.error("Error resending verification email:", error);
     return Response.json(
       {
         success: false,

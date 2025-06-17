@@ -1,8 +1,15 @@
 import { NextResponse } from "next/server";
 import dbConnect from "@/lib/dbConnect";
 import UserModel from "@/model/User";
+import { authOptions } from "../auth/[...nextauth]/options";
+import { getServerSession } from "next-auth";
 
 export async function POST(req) {
+  const session = await getServerSession(authOptions);
+
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   try {
     const { conversationId, note, email } = await req.json();
 
@@ -23,7 +30,6 @@ export async function POST(req) {
       );
     }
 
-    // Find the conversation
     const conversation = user.folders
       .flatMap((folder) => folder.conversations)
       .find((conv) => conv._id.toString() === conversationId);
@@ -35,27 +41,23 @@ export async function POST(req) {
       );
     }
 
-    // Ensure notes array is initialized
     if (!Array.isArray(conversation.notes)) {
       conversation.notes = [];
     }
 
-    // Create a new note object
     const newNote = {
       type: "text",
       content: note,
       timestamp: new Date(),
     };
 
-    // Add the note to the conversation
     conversation.notes.push(newNote);
-    conversation.updatedAt = new Date(); // optional
+    conversation.updatedAt = new Date();
 
     await user.save();
 
     return NextResponse.json({ success: true, notes: conversation.notes });
   } catch (error) {
-    console.error("Error saving note:", error);
     return NextResponse.json(
       { success: false, message: "Server error" },
       { status: 500 }

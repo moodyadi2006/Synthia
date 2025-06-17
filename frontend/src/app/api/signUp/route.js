@@ -40,7 +40,6 @@ export async function POST(request) {
         });
         await newUser.save();
       } catch (error) {
-        console.error("Error saving user:", error);
         return Response.json(
           { success: false, message: error.message },
           { status: 410 }
@@ -67,7 +66,6 @@ export async function POST(request) {
       { status: 200 }
     );
   } catch (error) {
-    console.error("Error regsitering User");
     return Response.json(
       {
         success: false,
