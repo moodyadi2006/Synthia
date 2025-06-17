@@ -5,11 +5,11 @@ import uuid
 import io
 from dotenv import load_dotenv
 from unstructured.partition.pdf import partition_pdf
-from utils.briefDoc_summarizer import summarize_all
-from utils.ytvideo_summarizer import process_video
-from utils.detailDoc_summarizer import summarize_all_in_detail
+from src.utils.briefDoc_summarizer import summarize_all
+from src.utils.ytvideo_summarizer import process_video
+from src.utils.detailDoc_summarizer import summarize_all_in_detail
 from unstructured.partition.docx import partition_docx
-from utils.visuaLens import extract_and_summarize_image
+from src.utils.visuaLens import extract_and_summarize_image
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.storage import InMemoryStore
@@ -17,7 +17,7 @@ from langchain.schema.document import Document
 from langchain.retrievers.multi_vector import MultiVectorRetriever
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.docstore.document import Document
-from utils.question import answer_question_legacy
+from src.utils.question import answer_question_legacy
 from google.oauth2 import id_token
 from google.auth.transport import requests
 import os

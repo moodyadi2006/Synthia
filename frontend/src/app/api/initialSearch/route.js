@@ -23,12 +23,12 @@ export async function POST(req) {
         formData.append(key, buffer, value.name);
       }
     }
-    
+
     formData.append("user_id", session.user._id);
     formData.append("provider", session.provider);
 
     const fastApiRes = await axios.post(
-      "http://127.0.0.1:8000/vectorize",
+      `${process.env.FASTAPI_BACKEND_URL}/vectorize`,
       formData,
       {
         headers: {

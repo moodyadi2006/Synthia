@@ -28,7 +28,7 @@ export async function POST(req) {
     formData.append("provider", session.provider);
 
     const fastApiRes = await axios.post(
-      "http://127.0.0.1:8000/query",
+      `${process.env.FASTAPI_BACKEND_URL}/query`,
       formData,
       {
         headers: {
